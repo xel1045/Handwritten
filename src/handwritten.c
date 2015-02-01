@@ -191,7 +191,7 @@ static void display_hour(struct tm *tick_time)
 static void display_minutes(struct tm *tick_time)
 {
 	// TODO-AD: To refactor to make it more readable. <xel1045@gmail.com>
-	int minutes = tick_time->tm_sec;
+	int minutes = tick_time->tm_min;
 
 	if (minutes <= 20) {
 		display_value(minutes, 1);
@@ -244,9 +244,9 @@ static void handle_minute_tick(struct tm *tick_time, TimeUnits units_changed)
 		display_hour(tick_time);
 	}
 
-	//if (units_changed & MINUTE_UNIT) {
+	if (units_changed & MINUTE_UNIT) {
 		display_minutes(tick_time);
-	//}
+	}
 }
 
 
@@ -296,7 +296,7 @@ static void init(void)
 	// Avoids a blank screen on watch start.
 	display_current_time();
 
-	tick_timer_service_subscribe(SECOND_UNIT, handle_minute_tick);
+	tick_timer_service_subscribe(MINUTE_UNIT, handle_minute_tick);
 }
 
 static void deinit()
