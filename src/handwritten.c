@@ -9,8 +9,9 @@
 #include <pebble.h>
 #include "autoconfig.h"
 
-
-static Window *window;
+//==============================================================================
+// CONSTANTS
+//==============================================================================
 
 //
 // There's only enough memory to load about 6 of 10 required images
@@ -31,8 +32,18 @@ static Window *window;
 
 #define NUMBER_OF_IMAGES 24
 
-// These images are 144 x 42 pixels (i.e. a quarter of the display),
-// black and white with the text adjusted to the left.
+#define EMPTY_SLOT -1
+
+//==============================================================================
+// PROPERTIES
+//==============================================================================
+
+static Window *window;
+
+/**
+ * These images are 144 x 42 pixels (i.e. a quarter of the display),
+ * black and white with the text adjusted to the left.
+ */
 const int IMAGE_RESOURCE_IDS[NUMBER_OF_IMAGES] = {
 	RESOURCE_ID_IMAGE_NUM_0, RESOURCE_ID_IMAGE_NUM_1, RESOURCE_ID_IMAGE_NUM_2,
 	RESOURCE_ID_IMAGE_NUM_3, RESOURCE_ID_IMAGE_NUM_4, RESOURCE_ID_IMAGE_NUM_5,
@@ -47,14 +58,19 @@ const int IMAGE_RESOURCE_IDS[NUMBER_OF_IMAGES] = {
 static GBitmap *images[TOTAL_IMAGE_SLOTS];
 static BitmapLayer *image_layers[TOTAL_IMAGE_SLOTS];
 
-#define EMPTY_SLOT -1
+/**
+ * The state is either "empty" or the digit of the image currently in
+ * the slot--which was going to be used to assist with de-duplication
+ * but we're not doing that due to the one parent-per-layer
+ * restriction mentioned above.
+ */
+static int image_slot_state[TOTAL_IMAGE_SLOTS] = {
+	EMPTY_SLOT, EMPTY_SLOT, EMPTY_SLOT
+};
 
-// The state is either "empty" or the digit of the image currently in
-// the slot--which was going to be used to assist with de-duplication
-// but we're not doing that due to the one parent-per-layer
-// restriction mentioned above.
-
-static int image_slot_state[TOTAL_IMAGE_SLOTS] = {EMPTY_SLOT, EMPTY_SLOT, EMPTY_SLOT};
+//==============================================================================
+// METHODS
+//==============================================================================
 
 /**
  * Loads the digit image from the application's resources and
@@ -80,7 +96,7 @@ static void load_digit_image_into_slot(int slot_number, int digit_value)
 
 	images[slot_number] = gbitmap_create_with_resource(IMAGE_RESOURCE_IDS[digit_value]);
 
-		GRect frame = (GRect) {
+	GRect frame = (GRect) {
 		.origin = { 0 , 21 + (slot_number) * (168/4) },
 		.size = images[slot_number]->bounds.size
 	};
@@ -108,12 +124,15 @@ static void load_digit_image_into_slot(int slot_number, int digit_value)
  */
 static void unload_digit_image_from_slot(int slot_number)
 {
-	if (image_slot_state[slot_number] != EMPTY_SLOT) {
-		layer_remove_from_parent(bitmap_layer_get_layer(image_layers[slot_number]));
-		bitmap_layer_destroy(image_layers[slot_number]);
-		gbitmap_destroy(images[slot_number]);
-		image_slot_state[slot_number] = EMPTY_SLOT;
+	if (image_slot_state[slot_number] == EMPTY_SLOT) {
+		return;
 	}
+
+	layer_remove_from_parent(bitmap_layer_get_layer(image_layers[slot_number]));
+	bitmap_layer_destroy(image_layers[slot_number]);
+	gbitmap_destroy(images[slot_number]);
+
+	image_slot_state[slot_number] = EMPTY_SLOT;
 }
 
 /**
@@ -148,73 +167,94 @@ static unsigned short get_display_hour(unsigned short hour)
 	return display_hour ? display_hour : 12;
 }
 
-static void display_time(struct tm *tick_time)
+/**
+ * Display hour for a given time to the screen.
+ *
+ * @param TimeUnits tick_time
+ * @return void
+ */
+static void display_hour(struct tm *tick_time)
 {
-	// TODO: Use `units_changed` and more intelligence to reduce
-	//       redundant digit unload/load?
-
 	int theHour = get_display_hour(tick_time->tm_hour);
+
 	if (image_slot_state[0] != theHour) {
-			display_value(theHour, 0);
-	}
-
-	if (tick_time->tm_min <= 20){
-		display_value(tick_time->tm_min, 1);
-		unload_digit_image_from_slot(2);
-	}
-
-	if ((tick_time->tm_min >= 20) && (tick_time->tm_min % 10 == 0)){
-		display_value((tick_time->tm_min-20)/10+20, 1);
-		unload_digit_image_from_slot(2);
-	}
-
-	if ((tick_time->tm_min >= 20) && (tick_time->tm_min % 10 != 0)){
-		display_value( ((((tick_time->tm_min-tick_time->tm_min%10))-20)/10+20), 1);
-		display_value((tick_time->tm_min%10), 2);
+		display_value(theHour, 0);
 	}
 }
 
+/**
+ * Display minutes for a given time to the screen.
+ *
+ * @param TimeUnits tick_time
+ * @return void
+ */
+static void display_minutes(struct tm *tick_time)
+{
+	// TODO-AD: To refactor to make it more readable. <xel1045@gmail.com>
+	int minutes = tick_time->tm_sec;
 
-//void on_animation_stopped(Animation *anim, bool finished, void *context)
-//{
-//    //Free the memoery used by the Animation
-//    property_animation_destroy((PropertyAnimation*) anim);
-//}
-//
-//void animate_layer(Layer *layer, GRect *start, GRect *finish, int duration, int delay)
-//{
-//    //Declare animation
-//    PropertyAnimation *anim = property_animation_create_layer_frame(layer, start, finish);
-//
-//    //Set characteristics
-//    animation_set_duration((Animation*) anim, duration);
-//    animation_set_delay((Animation*) anim, delay);
-//
-//    //Set stopped handler to free memory
-//    AnimationHandlers handlers = {
-//        //The reference to the stopped handler is the only one in the array
-//        .stopped = (AnimationStoppedHandler) on_animation_stopped
-//    };
-//    animation_set_handlers((Animation*) anim, handlers, NULL);
-//
-//    //Start animation!
-//    animation_schedule((Animation*) anim);
-//}
+	if (minutes <= 20) {
+		display_value(minutes, 1);
+		unload_digit_image_from_slot(2);
+	} else if (minutes % 10 == 0) {
+		display_value((minutes-20)/10+20, 1);
+		unload_digit_image_from_slot(2);
+	} else if (minutes % 10 != 0) {
+		display_value( ((((minutes-minutes%10))-20)/10+20), 1);
+		display_value((minutes%10), 2);
+	}
+}
 
+/**
+ * Display a time value to the screen.
+ *
+ * @param TimeUnits tick_time
+ * @return void
+ */
+static void display_time(struct tm *tick_time)
+{
+	display_hour(tick_time);
+	display_minutes(tick_time);
+}
 
+/**
+ * Gets the current local time and display it.
+ *
+ * @return void
+ */
+static void display_current_time()
+{
+	time_t now = time(NULL);
+	struct tm *tick_time = localtime(&now);
+
+	display_time(tick_time);
+}
+
+/**
+ * Subscribe to the tick timer event service. This handler gets called on every
+ * requested unit change.
+ *
+ * @param TimeUnits    tick_time
+ * @param TickHandler  units_changed
+ * @return void
+ */
 static void handle_minute_tick(struct tm *tick_time, TimeUnits units_changed)
 {
-	display_time(tick_time);
+	if (units_changed & HOUR_UNIT) {
+		display_hour(tick_time);
+	}
+
+	//if (units_changed & MINUTE_UNIT) {
+		display_minutes(tick_time);
+	//}
 }
 
 
 static void set_color(bool inverse)
 {
-	if (inverse) {
-		window_set_background_color(window, GColorWhite);
-	} else {
-		window_set_background_color(window, GColorBlack);
-	}
+	GColor backgroundColor = inverse ? GColorWhite : GColorBlack;
+
+	window_set_background_color(window, GColorBlack);
 }
 
 
@@ -230,18 +270,16 @@ static void in_received_handler(DictionaryIterator *iter, void *context)
 
 	// REPAINT THE DIGITS WITH THE PROPER COLOR
 	for (int i = 0; i < TOTAL_IMAGE_SLOTS; i++) {
-			unload_digit_image_from_slot(i);
+		unload_digit_image_from_slot(i);
 	}
 
-	time_t now = time(NULL);
-	struct tm *tick_time = localtime(&now);
-	display_time(tick_time);
+	display_current_time();
 }
 
 static void init(void)
 {
 	// call autoconf init (load previous settings and register app message handlers)
-	autoconfig_init(); //////////////// call autoconf_init
+	autoconfig_init();
 
 	// here the previous settings are already loaded
 	APP_LOG(APP_LOG_LEVEL_DEBUG, "Settings read. Inverted: %d", getInverted());
@@ -249,19 +287,16 @@ static void init(void)
 	// Register our custom receive handler which in turn will call Pebble Autoconfigs receive handler
 	app_message_register_inbox_received(in_received_handler);
 
-
 	window = window_create();
 	window_stack_push(window, true);
 
-	//Depending on option, the background will be black or white
+	// Depending on option, the background will be black or white
 	set_color(getInverted());
 
 	// Avoids a blank screen on watch start.
-	time_t now = time(NULL);
-	struct tm *tick_time = localtime(&now);
-	display_time(tick_time);
+	display_current_time();
 
-	tick_timer_service_subscribe(MINUTE_UNIT, handle_minute_tick);
+	tick_timer_service_subscribe(SECOND_UNIT, handle_minute_tick);
 }
 
 static void deinit()
