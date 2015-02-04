@@ -55,8 +55,17 @@ const int IMAGE_RESOURCE_IDS[NUMBER_OF_IMAGES] = {
 	RESOURCE_ID_IMAGE_NUM_30, RESOURCE_ID_IMAGE_NUM_40, RESOURCE_ID_IMAGE_NUM_50
 };
 
+const int image_screen_ratio[NUMBER_OF_IMAGES] = {87, 75, 87, 75, 75, 75, 50, 100, 75, 62, 50, 100, 75, 100, 100, 100, 87, 100, 90, 87, 95, 87, 80, 75};
+
+static int last_written = -1;
+static int before_last_written = -1;
+static int initial_delay = 0;       //(time used to hide the previous number)
+static int moved_down = 0;
+
 static GBitmap *images[TOTAL_IMAGE_SLOTS];
 static BitmapLayer *image_layers[TOTAL_IMAGE_SLOTS];
+static Layer *hiding_layers[TOTAL_IMAGE_SLOTS];
+
 
 /**
  * The state is either "empty" or the digit of the image currently in
@@ -72,12 +81,55 @@ static int image_slot_state[TOTAL_IMAGE_SLOTS] = {
 // METHODS
 //==============================================================================
 
+static void hiding_layer_update_callback(Layer *layer, GContext* ctx) {
+
+	GRect bounds = layer_get_bounds(layer);
+
+	// Here we test if the watch has its color inverted
+	if (getInverted()) {
+		graphics_context_set_fill_color(ctx, GColorWhite);
+	} else {
+		graphics_context_set_fill_color(ctx, GColorBlack);
+	}
+
+	graphics_fill_rect(ctx, bounds, 0, 0);
+}
+
+
+void on_animation_stopped(Animation *anim, bool finished, void *context)
+{
+	//Free the memoery used by the Animation
+	property_animation_destroy((PropertyAnimation*) anim);
+	//layer_destroy(hiding_layer);
+}
+
+
+void animate_layer(Layer *layer, GRect *start, GRect *finish, int duration, int delay)
+{
+	// Declare animation
+	PropertyAnimation *anim = property_animation_create_layer_frame(layer, start, finish);
+
+	// Set characteristics
+	animation_set_duration((Animation*) anim, duration);
+	animation_set_delay((Animation*) anim, delay);
+
+	// Set stopped handler to free memory
+	AnimationHandlers handlers = {
+		// The reference to the stopped handler is the only one in the array
+		.stopped = (AnimationStoppedHandler) on_animation_stopped
+	};
+	animation_set_handlers((Animation*) anim, handlers, NULL);
+
+	// Start animation!
+	animation_schedule((Animation*) anim);
+}
+
 /**
  * Loads the digit image from the application's resources and
  * displays it on-screen in the correct location.
  * Each slot is a quarter of the screen.
  */
-static void load_digit_image_into_slot(int slot_number, int digit_value)
+static void load_digit_image_into_slot(int slot_number, int digit_value, signed short nb_that_changes)
 {
 	// TODO: Signal these error(s)?
 	if ((slot_number < 0) || (slot_number >= TOTAL_IMAGE_SLOTS)) {
@@ -105,7 +157,7 @@ static void load_digit_image_into_slot(int slot_number, int digit_value)
 
 	image_layers[slot_number] = bitmap_layer;
 
-	// Here we decide if the watch will have inverted colors
+	//Here we test if the watch has inverted colors
 	if (getInverted()) {
 		bitmap_layer_set_compositing_mode(bitmap_layer, GCompOpAssignInverted);
 	}
@@ -115,6 +167,68 @@ static void load_digit_image_into_slot(int slot_number, int digit_value)
 	Layer *window_layer = window_get_root_layer(window);
 
 	layer_add_child(window_layer, bitmap_layer_get_layer(bitmap_layer));
+
+
+//    //Create a filled layer on top of the number
+//    Layer *hiding_layer = layer_create(frame);
+//    hiding_layers[slot_number]=hiding_layer;
+//    //layer_add_child(window_layer, bitmap_layer_get_layer(bitmap_layer));
+//    layer_insert_above_sibling(bitmap_layer_get_layer(hiding_layer),bitmap_layer_get_layer(bitmap_layer));
+
+
+
+	// Init the layer to hide the number
+	Layer *hiding_layer = layer_create(frame);
+	hiding_layers[slot_number]=hiding_layer;
+	layer_set_update_proc(hiding_layer, hiding_layer_update_callback);
+	layer_add_child(window_layer, hiding_layer);
+
+
+
+	// Slide slowly the hiding layer to the right to reveal the number
+	GRect start = frame;
+	GRect finish = (GRect) {
+		.origin = { 144 , 21 + (slot_number) * (168/4) },
+		.size = images[slot_number]->bounds.size
+	};
+
+
+	//is this the first time we write a number?
+	if (last_written == -1) {
+		last_written = digit_value;
+	}
+
+	//how long the overlaid block takes to scroll 1 lateral screen distance
+	int time_to_slide = 800;
+	int time_tweak = 30; //(value in % reducing the time delay between animations)
+
+
+	int thedelay;
+	if  (nb_that_changes == 3) {
+		if (slot_number==1) {
+			thedelay = initial_delay + time_to_slide*(image_screen_ratio[last_written]-time_tweak)/100;
+		} else if (slot_number==2) {
+			thedelay = initial_delay + time_to_slide*(image_screen_ratio[last_written]-time_tweak+image_screen_ratio[before_last_written]-time_tweak)/100;
+		} else {
+			thedelay = initial_delay;}
+	} else if  (nb_that_changes == 2) {
+		if (slot_number!=1) {
+			thedelay = initial_delay + time_to_slide*(image_screen_ratio[last_written]-time_tweak)/100;
+		} else {
+			thedelay = initial_delay;}
+	} else {
+		thedelay = initial_delay;
+	}
+
+	animate_layer(hiding_layer, &start, &finish, time_to_slide, thedelay);
+
+	//trying to destroy the slide out layer crashes the app
+	//layer_destroy(hiding_layer);
+
+	// take note of what number is currently being written on the watch
+	before_last_written = last_written;
+	last_written = digit_value;
+
 }
 
 /**
@@ -133,26 +247,22 @@ static void unload_digit_image_from_slot(int slot_number)
 	gbitmap_destroy(images[slot_number]);
 
 	image_slot_state[slot_number] = EMPTY_SLOT;
+	//layer_destroy(hiding_layers[slot_number]);
 }
 
 /**
  * Displays a text value between 1 and 19, 20, 30, 40, 50, 0(o'clock) on screen.
  */
-static void display_value(unsigned short value, unsigned short slot_number)
+static void display_value(signed short value, unsigned short slot_number, signed short nb_that_changes)
 {
-	// value = value % 100; // Maximum of two digits per row.
+	if ((image_slot_state[slot_number] != value) && (value != -1)) {
+		unload_digit_image_from_slot(slot_number);
+		load_digit_image_into_slot(slot_number, value, nb_that_changes);
+	}
 
-	// Column order is: | Column 0 | Column 1 |
-	// (We process the columns in reverse order because that makes
-	// extracting the digits from the value easier.)
-
-	// int slot_number = (row_number * 2) + column_number;
-
-	unload_digit_image_from_slot(slot_number);
-
-	load_digit_image_into_slot(slot_number, value);
-
-	//value = value / 10;
+	if ((image_slot_state[slot_number] != value) && (value == -1)) {
+		unload_digit_image_from_slot(slot_number);
+	}
 }
 
 static unsigned short get_display_hour(unsigned short hour)
@@ -188,22 +298,22 @@ static void display_hour(struct tm *tick_time)
  * @param TimeUnits tick_time
  * @return void
  */
-static void display_minutes(struct tm *tick_time)
-{
-	// TODO-AD: To refactor to make it more readable. <xel1045@gmail.com>
-	int minutes = tick_time->tm_min;
+// static void display_minutes(struct tm *tick_time)
+// {
+// 	// TODO-AD: To refactor to make it more readable. <xel1045@gmail.com>
+// 	int minutes = tick_time->tm_min;
 
-	if (minutes <= 20) {
-		display_value(minutes, 1);
-		unload_digit_image_from_slot(2);
-	} else if (minutes % 10 == 0) {
-		display_value((minutes-20)/10+20, 1);
-		unload_digit_image_from_slot(2);
-	} else if (minutes % 10 != 0) {
-		display_value( ((((minutes-minutes%10))-20)/10+20), 1);
-		display_value((minutes%10), 2);
-	}
-}
+// 	if (minutes <= 20) {
+// 		display_value(minutes, 1);
+// 		unload_digit_image_from_slot(2);
+// 	} else if (minutes % 10 == 0) {
+// 		display_value((minutes-20)/10+20, 1);
+// 		unload_digit_image_from_slot(2);
+// 	} else if (minutes % 10 != 0) {
+// 		display_value( ((((minutes-minutes%10))-20)/10+20), 1);
+// 		display_value((minutes%10), 2);
+// 	}
+// }
 
 /**
  * Display a time value to the screen.
@@ -213,8 +323,50 @@ static void display_minutes(struct tm *tick_time)
  */
 static void display_time(struct tm *tick_time)
 {
-	display_hour(tick_time);
-	display_minutes(tick_time);
+	// Here we extract all numerical info about the current time and split it in different variables
+	int theHour = get_display_hour(tick_time->tm_hour);
+	int theMin = tick_time->tm_min;
+	int theMinTens = (theMin - theMin % 10);
+	int theMinSecs = (theMin % 10);
+
+
+	// Here we define what will be the new state for each slot when the minute changes
+	int val1 = theHour;
+	int val2;
+	int val3;
+
+	if (theMin <= 20) {
+		val2 = theMin;
+		val3 = EMPTY_SLOT;
+	}
+
+	if ((theMin >= 20) && (theMin % 10 == 0)) {
+		val2 = (theMin-20)/10+20;
+		val3 = EMPTY_SLOT;
+	}
+	if ((theMin >= 20) && (theMin % 10 != 0)) {
+		val2 = (theMinTens-20)/10+20;
+		val3 = theMinSecs;
+	}
+
+	// Here we define how many numbers on screen will change based on the previous state
+	int nb_that_changes = 3;
+	if ((image_slot_state[0] != val1) && (image_slot_state[1] != val2) && (image_slot_state[2] != val3)) {
+		nb_that_changes = 3;
+	}
+	if ((image_slot_state[0] == val1) && (image_slot_state[1] != val2)) {
+		nb_that_changes = 2;
+	}
+	if ((image_slot_state[0] == val1) && (image_slot_state[1] == val2) && (image_slot_state[2] != val3)) {
+		nb_that_changes = 1;
+	}
+
+
+	// int image_new_state[TOTAL_IMAGE_SLOTS] = {theHour, EMPTY_SLOT, EMPTY_SLOT};
+
+	display_value(val1,0,nb_that_changes);
+	display_value(val2,1,nb_that_changes);
+	display_value(val3,2,nb_that_changes);
 }
 
 /**
@@ -240,13 +392,15 @@ static void display_current_time()
  */
 static void handle_minute_tick(struct tm *tick_time, TimeUnits units_changed)
 {
-	if (units_changed & HOUR_UNIT) {
-		display_hour(tick_time);
-	}
+	//if (units_changed & HOUR_UNIT) {
+	//	display_hour(tick_time);
+	//}
 
-	if (units_changed & MINUTE_UNIT) {
-		display_minutes(tick_time);
-	}
+	//if (units_changed & MINUTE_UNIT) {
+	//	display_minutes(tick_time);
+	//}
+
+	display_time(tick_time);
 }
 
 
@@ -264,7 +418,7 @@ static void in_received_handler(DictionaryIterator *iter, void *context)
 	autoconfig_in_received_handler(iter, context);
 
 	// here the new settings are available
-	APP_LOG(APP_LOG_LEVEL_DEBUG, "Setting updated. Inverted: %d", getInverted());
+	// APP_LOG(APP_LOG_LEVEL_DEBUG, "Setting updated. Inverted: %d", getInverted());
 
 	set_color(getInverted());
 
@@ -282,7 +436,7 @@ static void init(void)
 	autoconfig_init();
 
 	// here the previous settings are already loaded
-	APP_LOG(APP_LOG_LEVEL_DEBUG, "Settings read. Inverted: %d", getInverted());
+	// APP_LOG(APP_LOG_LEVEL_DEBUG, "Settings read. Inverted: %d", getInverted());
 
 	// Register our custom receive handler which in turn will call Pebble Autoconfigs receive handler
 	app_message_register_inbox_received(in_received_handler);
